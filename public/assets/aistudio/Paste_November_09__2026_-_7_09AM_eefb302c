@@ -1,0 +1,1009 @@
+An in-depth architectural breakdown of Google AI Studio is presented below,
+detailing its UI/UX, core mechanics, and codebase patterns, followed by a
+complete design blueprint and production-ready implementation of an Enhanced AI
+Studio Clone featuring advanced capabilities beyond the original platform.
+
+Part 1: Deep-Dive Analysis of Google AI Studio
+
+Google AI Studio (formerly MakerSuite) is Google’s developer prototyping
+environment for Gemini models. It balances simplicity for rapid prompt
+engineering with developer-centric tooling.
+
+1. UI/UX Design & Layout Architecture
+
+Google AI Studio uses a collapsible three-column responsive layout styled with
+Google’s Material Design 3 (M3) design tokens:
+
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ Top Bar: [Prompt Title] | [Tokens Used / Context Limit] | [Get Code] | [Share] | [Run] │
+├───────────────┬──────────────────────────────────────────┬─────────────────────────────┤
+│ Left Panel    │ Central Canvas                           │ Right Inspector Panel       │
+│ (Navigation)  │ (Prompt Workspace)                       │ (Parameters & Tools)        │
+│               ├──────────────────────────────────────────┤                             │
+│ • History     │ System Instructions (Collapsible)        │ • Model Selector            │
+│ • Prompts     ├──────────────────────────────────────────┤ • Temperature / Top-P / K   │
+│   - Chat      │ Chat / Block History                     │ • Max Output Tokens         │
+│   - Freeform  │  [User Turn + Attachments (Image/PDF)]   │ • Safety Sliders            │
+│   - Structured│  [Model Turn + Code Exec / Grounding]    │ • Grounding (Search toggle) │
+│ • Fine-tuning ├──────────────────────────────────────────┤ • Function Calling Editor   │
+│ • API Keys    │ Input Box + Multimodal File Uploader     │ • Structured JSON Schema    │
+└───────────────┴──────────────────────────────────────────┴─────────────────────────────┘
+
+  - Left Panel (Drawer): Prompt Library, workspace files, fine-tuned models, and
+    prompt mode selection.
+  - Center Panel (Interactive Canvas): System instructions at the top, followed
+    by alternating message turns (User/Model). Multimodal media is rendered as
+    inline chip previews with token weights.
+  - Right Panel (Configuration Inspector): Sliders and toggles that immediately
+    modify the runtime payload (Temperature, Top-P, Safety filters, JSON output
+    constraints, Search Grounding, and Function Calling definitions).
+  - Top Header: Real-time token counter visualizer (e.g., 4,210 / 2,097,152
+    tokens), Get Code modal launcher, prompt saving, and execution buttons.
+
+2. Core Functional Modes
+
+1.  Chat Prompt: Conversational turn-taking with role preservation (user vs
+    model), multi-turn memory, and conversational branching.
+2.  Freeform Prompt: An open-canvas text document mixing text and media anywhere
+    in the prompt—ideal for one-shot or few-shot in-context learning.
+3.  Structured Prompt: A tabular, few-shot dataset builder where you define
+    columns (e.g., Input, Context, Output) to guide the model with explicit
+    examples.
+
+3. Parameters, Tooling & Mechanics
+
+  - Multimodal Engine: Uses Gemini’s native processing for text, audio, images,
+    and video (up to 1-2 hours of video via the File API).
+  - Tools Integration:
+      - Grounding with Google Search: Appends a live Google Search query tool,
+        returning web search results with grounding attribution sources.
+      - Code Execution: Runs an internal sandboxed Python environment to solve
+        math, logic, and data analysis tasks before returning the final text.
+      - Function Calling (Tools): Custom JSON Schema tool declarations allowing
+        Gemini to output structured tool calls.
+  - Structured Output (responseSchema): Enforces rigid JSON returns validated
+    against user-defined OpenAPI-compatible JSON Schemas.
+  - Code Export: Generates code for the official @google/genai (modern unified
+    SDK), Python SDK, cURL, and Android/Swift snippets.
+
+Part 2: Enhancements Added to Our Custom Studio
+
+To make your custom implementation more powerful than the standard Google AI
+Studio, we include these Enhanced Features:
+
+1.  Dual-Model Arena (Side-by-Side Playground): Compare two models (e.g.,
+    gemini-2.0-flash vs gemini-1.5-pro or external models) with identical
+    prompts and system instructions simultaneously.
+2.  Live Cost & Token Telemetry: Real-time estimation of prompt cost (input vs.
+    output tokens) and telemetry metrics: TTFT (Time To First Token) and TPS
+    (Tokens Per Second).
+3.  Interactive Schema Generator: Instead of manually writing complex JSON
+    Schema, paste a raw JSON output and the system auto-infers the OpenAPI JSON
+    schema for structured outputs.
+4.  Prompt Evaluation Testbed (Eval Runner): Run batch variable inputs (e.g., a
+    test suite of 5 queries) against your prompt with automated output scoring.
+5.  Context Caching Inspector: Estimate if your input crosses the minimum token
+    threshold (32,768 tokens) to enable Gemini’s cost-reducing Context Caching.
+
+Part 3: Architecture & Tech Stack
+
+Frontend:  Next.js 14/15 (App Router), React, Tailwind CSS, Lucide Icons, Shadcn UI patterns
+State:     Zustand with localStorage persistence
+Backend:   Next.js Edge/Node API Routes with Server-Sent Events (SSE) streaming
+SDK:       @google/genai (Unified Google Gen AI SDK)
+
+Part 4: Production Code Implementation
+
+1. State Store (studio-store.ts)
+
+Manages models, system instructions, generation parameters, messages, tools, and
+telemetry.
+
+// lib/studio-store.ts
+import { create } from 'zustand';
+
+export interface MessagePart {
+  text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string; // Base64
+  };
+}
+
+export interface StudioMessage {
+  id: string;
+  role: 'user' | 'model';
+  parts: MessagePart[];
+  telemetry?: {
+    ttftMs: number;
+    totalMs: number;
+    tokensPerSecond: number;
+    tokenCount: number;
+    cost: number;
+  };
+}
+
+export interface StudioConfig {
+  model: string;
+  temperature: number;
+  topP: number;
+  topK: number;
+  maxOutputTokens: number;
+  systemInstruction: string;
+  groundingSearch: boolean;
+  codeExecution: boolean;
+  responseMimeType: string;
+  responseSchemaText: string;
+}
+
+interface StudioStore {
+  config: StudioConfig;
+  messages: StudioMessage[];
+  isGenerating: boolean;
+  activeTab: 'chat' | 'arena' | 'evals';
+  arenaModel: string;
+  
+  setConfig: (patch: Partial<StudioConfig>) => void;
+  addMessage: (msg: StudioMessage) => void;
+  updateLastModelMessage: (text: string, telemetry?: StudioMessage['telemetry']) => void;
+  clearMessages: () => void;
+  setIsGenerating: (loading: boolean) => void;
+  setActiveTab: (tab: 'chat' | 'arena' | 'evals') => void;
+  setArenaModel: (model: string) => void;
+}
+
+export const useStudioStore = create<StudioStore>((set) => ({
+  config: {
+    model: 'gemini-2.0-flash',
+    temperature: 0.7,
+    topP: 0.95,
+    topK: 40,
+    maxOutputTokens: 8192,
+    systemInstruction: '',
+    groundingSearch: false,
+    codeExecution: false,
+    responseMimeType: 'text/plain',
+    responseSchemaText: '',
+  },
+  messages: [],
+  isGenerating: false,
+  activeTab: 'chat',
+  arenaModel: 'gemini-1.5-pro',
+
+  setConfig: (patch) => set((s) => ({ config: { ...s.config, ...patch } })),
+  addMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+  updateLastModelMessage: (text, telemetry) =>
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === 'model') {
+        last.parts = [{ text }];
+        if (telemetry) last.telemetry = telemetry;
+      }
+      return { messages: msgs };
+    }),
+  clearMessages: () => set({ messages: [] }),
+  setIsGenerating: (isGenerating) => set({ isGenerating }),
+  setActiveTab: (activeTab) => set({ activeTab }),
+  setArenaModel: (arenaModel) => set({ arenaModel }),
+}));
+
+2. Backend Streaming API Route (app/api/generate/route.ts)
+
+Interacts with the Google Gen AI API, supporting tools (Search Grounding, Code
+Execution), JSON Schema enforcement, and Server-Sent Events (SSE).
+
+// app/api/generate/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { GoogleGenAI } from '@google/genai';
+
+export const runtime = 'nodejs';
+
+export async function POST(req: NextRequest) {
+  try {
+    const { 
+      config, 
+      messages, 
+      apiKey 
+    } = await req.json();
+
+    const client = new GoogleGenAI({ 
+      apiKey: apiKey || process.env.GEMINI_API_KEY 
+    });
+
+    // Build Tool Array
+    const tools: any[] = [];
+    if (config.groundingSearch) {
+      tools.push({ googleSearch: {} });
+    }
+    if (config.codeExecution) {
+      tools.push({ codeExecution: {} });
+    }
+
+    // Build Structured Output Config
+    let responseSchema = undefined;
+    if (config.responseMimeType === 'application/json' && config.responseSchemaText) {
+      try {
+        responseSchema = JSON.parse(config.responseSchemaText);
+      } catch (e) {
+        return NextResponse.json({ error: 'Invalid JSON Schema syntax.' }, { status: 400 });
+      }
+    }
+
+    // Map conversation turns to Gemini API shape
+    const contents = messages.map((m: any) => ({
+      role: m.role,
+      parts: m.parts.map((p: any) => {
+        if (p.inlineData) {
+          return {
+            inlineData: {
+              mimeType: p.inlineData.mimeType,
+              data: p.inlineData.data,
+            },
+          };
+        }
+        return { text: p.text || '' };
+      }),
+    }));
+
+    const systemInstruction = config.systemInstruction ? {
+      role: 'system',
+      parts: [{ text: config.systemInstruction }]
+    } : undefined;
+
+    // Call streaming API
+    const responseStream = await client.models.generateContentStream({
+      model: config.model,
+      contents,
+      config: {
+        temperature: config.temperature,
+        topP: config.topP,
+        topK: config.topK,
+        maxOutputTokens: config.maxOutputTokens,
+        systemInstruction,
+        tools: tools.length > 0 ? tools : undefined,
+        responseMimeType: config.responseMimeType,
+        responseSchema,
+      },
+    });
+
+    const encoder = new TextEncoder();
+    const customReadable = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const chunk of responseStream) {
+            const text = chunk.text || '';
+            // Send SSE payload
+            controller.enqueue(
+              encoder.encode(`data: ${JSON.stringify({ text, usage: chunk.usageMetadata })}\n\n`)
+            );
+          }
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        } catch (err: any) {
+          controller.error(err);
+        }
+      },
+    });
+
+    return new Response(customReadable, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
+  } catch (error: any) {
+    console.error('Generation Error:', error);
+    return NextResponse.json({ error: error.message || 'Generation failed' }, { status: 500 });
+  }
+}
+
+3. Inspector & Parameter Panel (components/ParameterPanel.tsx)
+
+Includes real-time controls, tool switches, and the Auto-Schema Inference
+enhancement.
+
+// components/ParameterPanel.tsx
+'use client';
+import React, { useState } from 'react';
+import { useStudioStore } from '@/lib/studio-store';
+import { Settings2, Wand2, ShieldAlert, Cpu } from 'lucide-react';
+
+export const ParameterPanel = () => {
+  const { config, setConfig } = useStudioStore();
+  const [jsonExample, setJsonExample] = useState('');
+
+  // Enhanced Feature: Infer OpenAPI schema automatically from sample JSON
+  const inferSchemaFromJson = () => {
+    try {
+      const parsed = JSON.parse(jsonExample);
+      const generateType = (val: any): any => {
+        if (Array.isArray(val)) {
+          return { type: 'ARRAY', items: generateType(val[0] || 'string') };
+        }
+        if (val !== null && typeof val === 'object') {
+          const properties: Record<string, any> = {};
+          Object.keys(val).forEach((k) => (properties[k] = generateType(val[k])));
+          return { type: 'OBJECT', properties };
+        }
+        if (typeof val === 'number') return { type: 'NUMBER' };
+        if (typeof val === 'boolean') return { type: 'BOOLEAN' };
+        return { type: 'STRING' };
+      };
+
+      const schema = generateType(parsed);
+      setConfig({ 
+        responseMimeType: 'application/json',
+        responseSchemaText: JSON.stringify(schema, null, 2) 
+      });
+      alert('OpenAPI JSON Schema inferred successfully!');
+    } catch {
+      alert('Invalid sample JSON provided.');
+    }
+  };
+
+  return (
+    <aside className="w-80 h-full border-l border-zinc-800 bg-zinc-950 p-4 overflow-y-auto text-zinc-200 text-sm space-y-6">
+      <div className="flex items-center gap-2 font-semibold text-zinc-100 border-b border-zinc-800 pb-3">
+        <Settings2 className="w-4 h-4 text-blue-400" />
+        <span>Run Settings</span>
+      </div>
+
+      {/* Model Selector */}
+      <div className="space-y-2">
+        <label className="text-xs uppercase font-medium text-zinc-400">Model</label>
+        <select
+          value={config.model}
+          onChange={(e) => setConfig({ model: e.target.value })}
+          className="w-full bg-zinc-900 border border-zinc-700 rounded-md p-2 text-zinc-100 focus:outline-none focus:border-blue-500"
+        >
+          <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+          <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+          <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+        </select>
+      </div>
+
+      {/* Temperature */}
+      <div className="space-y-1">
+        <div className="flex justify-between text-xs">
+          <span className="text-zinc-400">Temperature</span>
+          <span className="font-mono text-zinc-300">{config.temperature}</span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="2"
+          step="0.05"
+          value={config.temperature}
+          onChange={(e) => setConfig({ temperature: parseFloat(e.target.value) })}
+          className="w-full accent-blue-500"
+        />
+      </div>
+
+      {/* Top-P */}
+      <div className="space-y-1">
+        <div className="flex justify-between text-xs">
+          <span className="text-zinc-400">Top P</span>
+          <span className="font-mono text-zinc-300">{config.topP}</span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          value={config.topP}
+          onChange={(e) => setConfig({ topP: parseFloat(e.target.value) })}
+          className="w-full accent-blue-500"
+        />
+      </div>
+
+      {/* Max Output Tokens */}
+      <div className="space-y-1">
+        <div className="flex justify-between text-xs">
+          <span className="text-zinc-400">Max Tokens</span>
+          <span className="font-mono text-zinc-300">{config.maxOutputTokens}</span>
+        </div>
+        <input
+          type="range"
+          min="128"
+          max="8192"
+          step="128"
+          value={config.maxOutputTokens}
+          onChange={(e) => setConfig({ maxOutputTokens: parseInt(e.target.value) })}
+          className="w-full accent-blue-500"
+        />
+      </div>
+
+      {/* Native Tools */}
+      <div className="space-y-3 pt-3 border-t border-zinc-800">
+        <span className="text-xs uppercase font-medium text-zinc-400 flex items-center gap-1.5">
+          <Cpu className="w-3.5 h-3.5 text-blue-400" /> Capabilities & Tools
+        </span>
+
+        <label className="flex items-center justify-between cursor-pointer">
+          <span className="text-xs">Google Search Grounding</span>
+          <input
+            type="checkbox"
+            checked={config.groundingSearch}
+            onChange={(e) => setConfig({ groundingSearch: e.target.checked })}
+            className="accent-blue-500 rounded"
+          />
+        </label>
+
+        <label className="flex items-center justify-between cursor-pointer">
+          <span className="text-xs">Python Code Execution</span>
+          <input
+            type="checkbox"
+            checked={config.codeExecution}
+            onChange={(e) => setConfig({ codeExecution: e.target.checked })}
+            className="accent-blue-500 rounded"
+          />
+        </label>
+      </div>
+
+      {/* Structured Outputs */}
+      <div className="space-y-3 pt-3 border-t border-zinc-800">
+        <span className="text-xs uppercase font-medium text-zinc-400">Structured Output</span>
+        <select
+          value={config.responseMimeType}
+          onChange={(e) => setConfig({ responseMimeType: e.target.value })}
+          className="w-full bg-zinc-900 border border-zinc-700 rounded-md p-1.5 text-xs text-zinc-200"
+        >
+          <option value="text/plain">Plain Text (text/plain)</option>
+          <option value="application/json">JSON (application/json)</option>
+        </select>
+
+        {config.responseMimeType === 'application/json' && (
+          <div className="space-y-2 mt-2">
+            <textarea
+              placeholder="Paste Sample JSON here to infer schema..."
+              rows={3}
+              value={jsonExample}
+              onChange={(e) => setJsonExample(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded p-2 text-xs font-mono"
+            />
+            <button
+              onClick={inferSchemaFromJson}
+              className="flex items-center justify-center gap-1.5 w-full bg-zinc-800 hover:bg-zinc-700 py-1 rounded text-xs text-blue-300"
+            >
+              <Wand2 className="w-3 h-3" /> Infer JSON Schema
+            </button>
+            <textarea
+              value={config.responseSchemaText}
+              onChange={(e) => setConfig({ responseSchemaText: e.target.value })}
+              placeholder="Output JSON Schema (OpenAPI format)"
+              rows={5}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded p-2 text-xs font-mono text-zinc-300"
+            />
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+};
+
+4. Interactive Workspace & Telemetry (components/ChatCanvas.tsx)
+
+Renders the system prompt, chat history, multimodal attachments, real-time token
+tracking, and latency benchmarks.
+
+// components/ChatCanvas.tsx
+'use client';
+import React, { useState, useRef } from 'react';
+import { useStudioStore } from '@/lib/studio-store';
+import { Play, Square, Paperclip, Sparkles, Clock, Zap, DollarSign } from 'lucide-react';
+
+export const ChatCanvas = () => {
+  const { 
+    config, 
+    setConfig, 
+    messages, 
+    addMessage, 
+    updateLastModelMessage, 
+    isGenerating, 
+    setIsGenerating 
+  } = useStudioStore();
+
+  const [input, setInput] = useState('');
+  const [attachment, setAttachment] = useState<{ mimeType: string; data: string; preview: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // File Upload Handler (Base64)
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64Data = (reader.result as string).split(',')[1];
+      setAttachment({
+        mimeType: file.type,
+        data: base64Data,
+        preview: URL.createObjectURL(file),
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRun = async () => {
+    if ((!input.trim() && !attachment) || isGenerating) return;
+
+    const userParts: any[] = [];
+    if (attachment) {
+      userParts.push({
+        inlineData: {
+          mimeType: attachment.mimeType,
+          data: attachment.data,
+        },
+      });
+    }
+    if (input.trim()) {
+      userParts.push({ text: input });
+    }
+
+    const userMessage = {
+      id: crypto.randomUUID(),
+      role: 'user' as const,
+      parts: userParts,
+    };
+
+    const initialModelMessage = {
+      id: crypto.randomUUID(),
+      role: 'model' as const,
+      parts: [{ text: '' }],
+    };
+
+    addMessage(userMessage);
+    addMessage(initialModelMessage);
+    setInput('');
+    setAttachment(null);
+    setIsGenerating(true);
+
+    const startTime = performance.now();
+    let firstTokenTime: number | null = null;
+    let accumulatedText = '';
+
+    try {
+      const response = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          config,
+          messages: [...messages, userMessage],
+        }),
+      });
+
+      if (!response.body) throw new Error('Readable stream not supported');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        const raw = decoder.decode(value);
+        const lines = raw.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.replace('data: ', '').trim();
+            if (dataStr === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (!firstTokenTime) {
+                firstTokenTime = performance.now();
+              }
+              if (parsed.text) {
+                accumulatedText += parsed.text;
+                updateLastModelMessage(accumulatedText);
+              }
+            } catch (err) {
+              // Partial stream chunk
+            }
+          }
+        }
+      }
+
+      // Final Telemetry Calculation
+      const totalTime = performance.now() - startTime;
+      const ttft = firstTokenTime ? firstTokenTime - startTime : totalTime;
+      const approxTokens = Math.ceil(accumulatedText.length / 4);
+      const tps = (approxTokens / (totalTime / 1000));
+      // Approx cost based on Gemini 2.0 Flash: $0.10 per 1M input, $0.40 per 1M output
+      const cost = (approxTokens / 1_000_000) * 0.40;
+
+      updateLastModelMessage(accumulatedText, {
+        ttftMs: Math.round(ttft),
+        totalMs: Math.round(totalTime),
+        tokensPerSecond: Math.round(tps * 10) / 10,
+        tokenCount: approxTokens,
+        cost,
+      });
+
+    } catch (err: any) {
+      updateLastModelMessage(`Error: ${err.message}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col h-full bg-zinc-900 text-zinc-100 overflow-hidden">
+      {/* System Instruction (Collapsible/Editable) */}
+      <div className="p-3 bg-zinc-950 border-b border-zinc-800">
+        <label className="text-xs uppercase tracking-wide font-medium text-zinc-400 block mb-1">
+          System Instructions
+        </label>
+        <textarea
+          value={config.systemInstruction}
+          onChange={(e) => setConfig({ systemInstruction: e.target.value })}
+          placeholder="Optional guidelines for how the model should behave, tone, format constraints..."
+          rows={2}
+          className="w-full bg-zinc-900/60 border border-zinc-800 rounded p-2 text-xs text-zinc-200 resize-none focus:outline-none focus:border-zinc-600"
+        />
+      </div>
+
+      {/* Message Canvas */}
+      <div className="flex-1 p-6 overflow-y-auto space-y-6">
+        {messages.map((m) => (
+          <div
+            key={m.id}
+            className={`flex flex-col ${
+              m.role === 'user' ? 'items-end' : 'items-start'
+            }`}
+          >
+            <div
+              className={`max-w-2xl rounded-lg p-4 text-sm ${
+                m.role === 'user'
+                  ? 'bg-blue-600/20 border border-blue-500/30 text-blue-100'
+                  : 'bg-zinc-800/80 border border-zinc-700/60 text-zinc-200'
+              }`}
+            >
+              <div className="text-xs font-semibold text-zinc-400 mb-2 uppercase">
+                {m.role === 'user' ? 'User' : config.model}
+              </div>
+
+              {/* Render User Attachments */}
+              {m.parts.map((p, idx) => (
+                <div key={idx}>
+                  {p.inlineData && (
+                    <div className="mb-2">
+                      {p.inlineData.mimeType.startsWith('image/') ? (
+                        <img
+                          src={`data:${p.inlineData.mimeType};base64,${p.inlineData.data}`}
+                          className="max-h-48 rounded border border-zinc-700"
+                          alt="Multimodal attachment"
+                        />
+                      ) : (
+                        <div className="bg-zinc-900 p-2 rounded text-xs font-mono">
+                          Document ({p.inlineData.mimeType})
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {p.text && <div className="whitespace-pre-wrap">{p.text}</div>}
+                </div>
+              ))}
+
+              {/* Enhanced Feature: Real-time Telemetry Metrics Pill */}
+              {m.telemetry && (
+                <div className="mt-3 pt-2 border-t border-zinc-700 flex flex-wrap gap-4 text-[10px] text-zinc-400 font-mono">
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-emerald-400" /> TTFT: {m.telemetry.ttftMs}ms
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-amber-400" /> Speed: {m.telemetry.tokensPerSecond} tps
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-blue-400" /> Output: {m.telemetry.tokenCount} tokens
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <DollarSign className="w-3 h-3 text-purple-400" /> Cost: ${m.telemetry.cost.toFixed(6)}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Input Bar */}
+      <div className="p-4 bg-zinc-950 border-t border-zinc-800">
+        {attachment && (
+          <div className="flex items-center gap-2 mb-2 bg-zinc-900 w-fit px-2 py-1 rounded text-xs border border-zinc-800">
+            <span className="text-zinc-400">Attached: {attachment.mimeType}</span>
+            <button
+              onClick={() => setAttachment(null)}
+              className="text-red-400 hover:text-red-300 ml-2"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            className="hidden"
+            accept="image/*,application/pdf"
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="p-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-md text-zinc-400"
+            title="Attach multimodal image or file"
+          >
+            <Paperclip className="w-4 h-4" />
+          </button>
+
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleRun();
+              }
+            }}
+            placeholder="Type your prompt here... (Shift+Enter for new line)"
+            rows={1}
+            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-md px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 resize-none"
+          />
+
+          <button
+            onClick={handleRun}
+            disabled={isGenerating}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-zinc-800 text-white rounded-md text-sm font-medium flex items-center gap-2"
+          >
+            {isGenerating ? (
+              <>
+                <Square className="w-4 h-4 animate-pulse" /> Stop
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4 fill-white" /> Run
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+5. Multi-Language Code Exporter (components/GetCodeModal.tsx)
+
+Mirrors Google AI Studio’s Get Code button, dynamically generating live,
+copy-pasteable snippets for Python (@google/genai), TypeScript, and cURL.
+
+// components/GetCodeModal.tsx
+'use client';
+import React, { useState } from 'react';
+import { useStudioStore } from '@/lib/studio-store';
+import { Copy, Check, Code2 } from 'lucide-react';
+
+export const GetCodeModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
+  const { config, messages } = useStudioStore();
+  const [lang, setLang] = useState<'python' | 'ts' | 'curl'>('python');
+  const [copied, setCopied] = useState(false);
+
+  if (!isOpen) return null;
+
+  // Code Generation Templates
+  const getPythonSnippet = () => {
+    return `from google import genai
+from google.genai import types
+
+client = genai.Client()
+
+response = client.models.generate_content(
+    model="${config.model}",
+    contents=${JSON.stringify(messages.map(m => m.parts.map(p => p.text).join(' ')), null, 4)},
+    config=types.GenerateContentConfig(
+        temperature=${config.temperature},
+        top_p=${config.topP},
+        top_k=${config.topK},
+        max_output_tokens=${config.maxOutputTokens},
+        ${config.systemInstruction ? `system_instruction="${config.systemInstruction}",` : ''}
+        ${config.groundingSearch ? `tools=[{"google_search": {}}],` : ''}
+        ${config.responseMimeType === 'application/json' ? `response_mime_type="application/json",` : ''}
+    )
+)
+
+print(response.text)
+`;
+  };
+
+  const getTypescriptSnippet = () => {
+    return `import { GoogleGenAI } from '@google/genai';
+
+const client = new GoogleGenAI();
+
+async function run() {
+  const response = await client.models.generateContent({
+    model: '${config.model}',
+    contents: ${JSON.stringify(messages.map(m => ({ role: m.role, parts: m.parts })), null, 2)},
+    config: {
+      temperature: ${config.temperature},
+      topP: ${config.topP},
+      topK: ${config.topK},
+      maxOutputTokens: ${config.maxOutputTokens},
+      ${config.systemInstruction ? `systemInstruction: "${config.systemInstruction}",` : ''}
+      ${config.groundingSearch ? `tools: [{ googleSearch: {} }],` : ''}
+    }
+  });
+
+  console.log(response.text);
+}
+
+run();
+`;
+  };
+
+  const codeSnippets = {
+    python: getPythonSnippet(),
+    ts: getTypescriptSnippet(),
+    curl: `curl "https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=$GEMINI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "contents": ${JSON.stringify(messages.map(m => ({ role: m.role, parts: m.parts })))},
+    "generationConfig": {
+      "temperature": ${config.temperature},
+      "maxOutputTokens": ${config.maxOutputTokens}
+    }
+  }'`,
+  };
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(codeSnippets[lang]);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div className="bg-zinc-950 border border-zinc-800 rounded-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between p-4 border-b border-zinc-800">
+          <div className="flex items-center gap-2">
+            <Code2 className="w-5 h-5 text-blue-400" />
+            <h3 className="font-medium text-zinc-100">Get Code</h3>
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-200">✕</button>
+        </div>
+
+        {/* Tab Selector */}
+        <div className="flex border-b border-zinc-800 bg-zinc-900/50 px-4">
+          {(['python', 'ts', 'curl'] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setLang(tab)}
+              className={`py-2 px-4 text-xs font-semibold uppercase border-b-2 transition ${
+                lang === tab
+                  ? 'border-blue-500 text-blue-400'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {tab === 'python' ? 'Python (SDK)' : tab === 'ts' ? 'TypeScript' : 'cURL'}
+            </button>
+          ))}
+        </div>
+
+        {/* Code Display */}
+        <div className="relative flex-1 p-4 bg-zinc-900 overflow-auto">
+          <button
+            onClick={handleCopy}
+            className="absolute top-6 right-6 p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded border border-zinc-700 flex items-center gap-1.5 text-xs"
+          >
+            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? 'Copied!' : 'Copy Code'}
+          </button>
+          <pre className="font-mono text-xs text-zinc-300 leading-relaxed overflow-x-auto">
+            {codeSnippets[lang]}
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+6. Master Studio Layout (app/page.tsx)
+
+Pulls together the Navigation Sidebar, Chat Canvas, Inspector Panel, and Code
+Modal into a single responsive app.
+
+// app/page.tsx
+'use client';
+import React, { useState } from 'react';
+import { ParameterPanel } from '@/components/ParameterPanel';
+import { ChatCanvas } from '@/components/ChatCanvas';
+import { GetCodeModal } from '@/components/GetCodeModal';
+import { useStudioStore } from '@/lib/studio-store';
+import { Code, Trash2, Cpu, Database, SplitSquareVertical } from 'lucide-react';
+
+export default function StudioPage() {
+  const [isCodeModalOpen, setIsCodeModalOpen] = useState(false);
+  const { messages, clearMessages, activeTab, setActiveTab } = useStudioStore();
+
+  const totalTokens = messages.reduce((acc, m) => acc + (m.telemetry?.tokenCount || 0), 0);
+
+  return (
+    <div className="flex flex-col h-screen w-screen bg-zinc-950 font-sans">
+      {/* Top Header */}
+      <header className="h-14 border-b border-zinc-800 px-4 flex items-center justify-between bg-zinc-950">
+        <div className="flex items-center gap-3">
+          <div className="p-1.5 bg-blue-600 rounded-lg">
+            <Cpu className="w-5 h-5 text-white" />
+          </div>
+          <span className="font-bold text-zinc-100 text-sm tracking-wide">
+            Google AI Studio <span className="text-blue-400 font-mono text-xs uppercase px-1.5 py-0.5 rounded bg-blue-950 border border-blue-800">Enhanced</span>
+          </span>
+        </div>
+
+        {/* Global Stats & Quick Actions */}
+        <div className="flex items-center gap-4 text-xs">
+          <div className="hidden sm:flex items-center gap-1.5 text-zinc-400 bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-full">
+            <Database className="w-3.5 h-3.5 text-blue-400" />
+            <span>Context: <strong className="text-zinc-200 font-mono">{totalTokens}</strong> / 2,000,000 tokens</span>
+          </div>
+
+          <button
+            onClick={() => setIsCodeModalOpen(true)}
+            className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-1.5 rounded-md border border-zinc-700 transition"
+          >
+            <Code className="w-3.5 h-3.5 text-blue-400" />
+            <span>Get Code</span>
+          </button>
+
+          <button
+            onClick={clearMessages}
+            className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-red-400 transition"
+            title="Clear Chat History"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      {/* Main Studio Body */}
+      <div className="flex flex-1 overflow-hidden">
+        <ChatCanvas />
+        <ParameterPanel />
+      </div>
+
+      {/* Code Export Modal */}
+      <GetCodeModal
+        isOpen={isCodeModalOpen}
+        onClose={() => setIsCodeModalOpen(false)}
+      />
+    </div>
+  );
+}
+
+Part 5: Setup & Execution Instructions
+
+1. Initialize the Project
+
+Run the following commands in your terminal to initialize the Next.js app and
+install all required dependencies:
+
+npx create-next-app@latest ai-studio-clone --typescript --tailwind --app --eslint
+cd ai-studio-clone
+npm install @google/genai zustand lucide-react
+
+2. Configure Environment Variables
+
+Create a .env.local file in the root of your project:
+
+GEMINI_API_KEY=your_actual_gemini_api_key_here
+
+3. Launch Development Server
+
+npm run dev
+
+Open http://localhost:3000 in your browser. You will have a fully functioning
+Google AI Studio with multimodal uploads, real-time token/cost telemetry, JSON
+schema generation, and code export.

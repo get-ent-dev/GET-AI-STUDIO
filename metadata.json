@@ -1,0 +1,6 @@
+{
+  "name": "Google AI Studio Enhanced",
+  "description": "Advanced Gemini developer prototyping environment featuring real-time streaming, multimodal canvas, live TTFT/TPS telemetry, Dual-Model Arena, JSON Schema inferrer, and multi-language code export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
